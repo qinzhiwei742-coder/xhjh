@@ -1,0 +1,70 @@
+// 清理localStorage的脚本
+// 用户可以在浏览器控制台中运行这段代码来清理空间
+
+function clearOldData() {
+  console.log('=== LocalStorage 清理工具 ===\n');
+  
+  // 获取所有localStorage的key
+  const keys = Object.keys(localStorage);
+  console.log(`发现 ${keys.length} 个localStorage项\n`);
+  
+  // 按大小排序
+  const keySizes = keys.map(key => {
+    const value = localStorage.getItem(key);
+    const size = value ? new Blob([value]).size : 0;
+    return { key, size };
+  }).sort((a, b) => b.size - a.size);
+  
+  console.log('=== 当前LocalStorage使用情况（按大小排序）===\n');
+  keySizes.forEach(item => {
+    const sizeKB = (item.size / 1024).toFixed(2);
+    const sizeMB = (item.size / 1024 / 1024).toFixed(4);
+    console.log(`${item.key}: ${sizeKB} KB (${sizeMB} MB)`);
+  });
+  
+  // 计算总大小
+  const totalSize = keySizes.reduce((sum, item) => sum + item.size, 0);
+  const totalMB = (totalSize / 1024 / 1024).toFixed(4);
+  console.log(`\n=== 总计: ${(totalSize / 1024).toFixed(2)} KB (${totalMB} MB) ===`);
+  
+  // localStorage配额通常是5MB
+  const quota = 5 * 1024 * 1024;
+  const available = quota - totalSize;
+  console.log(`\n配额: 5 MB`);
+  console.log(`可用空间: ${(available / 1024 / 1024).toFixed(4)} MB`);
+  
+  if (totalSize > quota) {
+    console.log(`\n❌ 已超出配额 ${((totalSize - quota) / 1024 / 1024).toFixed(4)} MB`);
+    console.log('\n=== 建议清理以下数据 ===');
+    
+    // 找出最大的几项
+    const largeItems = keySizes.filter(item => item.size > 50 * 1024); // > 50KB
+    console.log('\n大于50KB的数据项（建议优先清理）：');
+    largeItems.forEach(item => {
+      console.log(`  - ${item.key}: ${(item.size / 1024).toFixed(2)} KB`);
+    });
+    
+    // 提示用户
+    console.log('\n=== 清理建议 ===');
+    console.log('1. 如果不需要历史数据，可以删除订单/核销/退款文件');
+    console.log('2. 切换门店体系后再切换回来（会重新加载数据）');
+    console.log('3. 使用浏览器开发者工具清理');
+    
+    return {
+      totalSize,
+      available,
+      overQuota: true,
+      largeItems: largeItems.map(item => item.key)
+    };
+  } else {
+    console.log(`\n✅ 空间充足`);
+    return {
+      totalSize,
+      available,
+      overQuota: false
+    };
+  }
+}
+
+// 自动执行
+clearOldData();

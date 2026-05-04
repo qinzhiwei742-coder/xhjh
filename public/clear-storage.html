@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LocalStorage 清理工具</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .container {
+      background: white;
+      border-radius: 8px;
+      padding: 30px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 {
+      color: #165dff;
+      margin-bottom: 20px;
+    }
+    .info {
+      background: #e8f3ff;
+      border: 1px solid #165dff;
+      border-radius: 6px;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+    .warning {
+      background: #fff7e8;
+      border: 1px solid #ff7d00;
+      border-radius: 6px;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+    .danger {
+      background: #fff1f0;
+      border: 1px solid #f53f3f;
+      border-radius: 6px;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+    button {
+      background: #165dff;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      margin: 5px;
+    }
+    button:hover {
+      background: #4080ff;
+    }
+    button.danger {
+      background: #f53f3f;
+    }
+    button.danger:hover {
+      background: #ff6b6b;
+    }
+    .result {
+      background: #f7f8fa;
+      border-radius: 6px;
+      padding: 15px;
+      margin-top: 20px;
+      font-family: monospace;
+      white-space: pre-wrap;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 15px 0;
+    }
+    th, td {
+      border: 1px solid #e5e6eb;
+      padding: 10px;
+      text-align: left;
+    }
+    th {
+      background: #f7f8fa;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🧹 LocalStorage 清理工具</h1>
+    
+    <div class="info">
+      <strong>说明：</strong>此工具用于清理浏览器的LocalStorage空间，解决"超出配额"的问题。
+    </div>
+    
+    <div class="warning">
+      <strong>注意：</strong>清理操作不可恢复，请谨慎操作。建议先查看当前使用情况。
+    </div>
+    
+    <div>
+      <button onclick="checkStorage()">📊 查看当前使用情况</button>
+      <button onclick="clearDataFiles()" class="danger">🗑️ 清理数据文件（订单/核销/退款/广告）</button>
+      <button onclick="clearAll()" class="danger">⚠️ 清空所有数据（谨慎使用）</button>
+    </div>
+    
+    <div id="result" class="result" style="display: none;"></div>
+  </div>
+  
+  <script>
+    function formatSize(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+      return (bytes / 1024 / 1024).toFixed(4) + ' MB';
+    }
+    
+    function checkStorage() {
+      const result = document.getElementById('result');
+      result.style.display = 'block';
+      result.textContent = '正在检查...\n\n';
+      
+      const keys = Object.keys(localStorage);
+      const data = [];
+      
+      keys.forEach(key => {
+        const value = localStorage.getItem(key);
+        const size = value ? new Blob([value]).size : 0;
+        data.push({ key, size });
+      });
+      
+      data.sort((a, b) => b.size - a.size);
+      
+      let output = `=== LocalStorage 使用情况 ===\n\n`;
+      output += `总共 ${keys.length} 个数据项\n\n`;
+      output += `序号\t大小\t\t键名\n`;
+      output += `----------------------------------------\n`;
+      
+      let totalSize = 0;
+      data.forEach((item, index) => {
+        totalSize += item.size;
+        output += `${index + 1}\t${formatSize(item.size)}\t${item.key}\n`;
+      });
+      
+      output += `\n----------------------------------------\n`;
+      output += `总计: ${formatSize(totalSize)}\n`;
+      output += `配额: 5 MB\n`;
+      output += `可用: ${formatSize(5 * 1024 * 1024 - totalSize)}\n`;
+      
+      if (totalSize > 5 * 1024 * 1024) {
+        output += `\n❌ 已超出配额 ${formatSize(totalSize - 5 * 1024 * 1024)}！\n`;
+        output += `\n⚠️ 建议清理以下数据文件：\n`;
+        data.filter(item => item.key.includes('Data') || item.key.includes('Stats')).forEach(item => {
+          output += `  - ${item.key}: ${formatSize(item.size)}\n`;
+        });
+      } else {
+        output += `\n✅ 空间充足\n`;
+      }
+      
+      result.textContent = output;
+    }
+    
+    function clearDataFiles() {
+      if (!confirm('确定要清理所有数据文件吗？这将删除：\n- 订单数据\n- 核销数据\n- 退款数据\n- 广告费数据\n- 对应的文件信息\n\n清理后您需要重新上传这些文件。')) {
+        return;
+      }
+      
+      const keys = Object.keys(localStorage);
+      let count = 0;
+      
+      keys.forEach(key => {
+        if (key.includes('Data') || key.includes('Stats') || key.includes('FileInfo')) {
+          localStorage.removeItem(key);
+          count++;
+        }
+      });
+      
+      alert(`已清理 ${count} 个数据项。\n\n请刷新页面后重新上传数据文件。`);
+      location.reload();
+    }
+    
+    function clearAll() {
+      if (!confirm('⚠️ 确定要清空所有数据吗？\n\n这将删除所有本地存储的数据，包括：\n- 门店体系设置\n- 登录状态\n- 所有数据文件\n- 所有配置\n\n此操作不可恢复！')) {
+        return;
+      }
+      
+      if (!confirm('再次确认：真的要清空所有数据吗？')) {
+        return;
+      }
+      
+      localStorage.clear();
+      alert('已清空所有数据。\n\n请刷新页面。');
+      location.reload();
+    }
+  </script>
+</body>
+</html>
