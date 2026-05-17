@@ -2762,7 +2762,11 @@ async def get_history_api(type: str = None):
             with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if type:
-                    data = [item for item in data if item.get("type", "zimage") == type]
+                    if type == "zimage":
+                        # zimage 页面同时显示 zimage 和 cloud 类型的记录
+                        data = [item for item in data if item.get("type", "zimage") in ("zimage", "cloud")]
+                    else:
+                        data = [item for item in data if item.get("type", "zimage") == type]
                 data = [item for item in data if item.get("images") and len(item["images"]) > 0]
 
                 def sort_key(item):
@@ -3068,7 +3072,7 @@ async def generate_cloud(req: CloudGenRequest):
                             print(f"Download error: {dl_e}")
                             local_path = img_url
 
-                        record = {"timestamp": time.time(), "prompt": req.prompt, "images": [local_path], "type": "cloud"}
+                        record = {"timestamp": time.time(), "prompt": req.prompt, "images": [local_path], "type": "zimage"}
                         save_to_history(record)
                         try:
                             await manager.broadcast_new_image(record)

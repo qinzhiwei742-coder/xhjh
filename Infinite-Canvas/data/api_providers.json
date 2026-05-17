@@ -61,5 +61,20 @@
     "video_models": [],
     "ms_loras": [],
     "ms_defaults_version": 0
+  },
+  {
+    "id": "api-oki8z3",
+    "name": "贞贞的工作坊",
+    "base_url": "https://ai.t8star.org",
+    "protocol": "openai",
+    "enabled": true,
+    "primary": false,
+    "image_models": [
+      "gpt-image-2"
+    ],
+    "chat_models": [],
+    "video_models": [],
+    "ms_loras": [],
+    "ms_defaults_version": 0
   }
 ]
