@@ -411,7 +411,7 @@
                 const data = await res.json();
                 placeholder.remove();
                 if (res.ok && data.url) {
-                    renderImageCard({ timestamp: Date.now(), prompt, images: [data.url], type: 'cloud' }, true);
+                    renderImageCard({ timestamp: Date.now(), prompt, images: [data.url], type: 'zimage' }, true);
                 } else {
                     throw new Error(data.detail?.errors?.message || data.detail || "Cloud Error");
                 }

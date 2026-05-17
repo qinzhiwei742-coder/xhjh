@@ -47,8 +47,8 @@
     "ms_defaults_version": 3
   },
   {
-    "id": "api",
-    "name": "新 API 平台",
+    "id": "apimart",
+    "name": "apimart",
     "base_url": "https://api.apimart.ai",
     "protocol": "openai",
     "enabled": true,
@@ -63,7 +63,7 @@
     "ms_defaults_version": 0
   },
   {
-    "id": "api-oki8z3",
+    "id": "api-ndonm6",
     "name": "贞贞的工作坊",
     "base_url": "https://ai.t8star.org",
     "protocol": "openai",
