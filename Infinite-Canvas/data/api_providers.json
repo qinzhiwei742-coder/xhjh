@@ -45,5 +45,21 @@
       }
     ],
     "ms_defaults_version": 3
+  },
+  {
+    "id": "api",
+    "name": "新 API 平台",
+    "base_url": "https://api.apimart.ai",
+    "protocol": "openai",
+    "enabled": true,
+    "primary": false,
+    "image_models": [
+      "gpt-image-2",
+      "gpt-image-2-official"
+    ],
+    "chat_models": [],
+    "video_models": [],
+    "ms_loras": [],
+    "ms_defaults_version": 0
   }
 ]
