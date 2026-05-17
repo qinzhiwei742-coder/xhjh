@@ -695,6 +695,7 @@ class MsGenerateRequest(BaseModel):
     size: str = ""
     loras: Optional[Any] = None
     client_id: Optional[str] = None
+    type: str = "klein"
 
 class CanvasLLMRequest(BaseModel):
     message: str = Field(min_length=1, max_length=LLM_MESSAGE_MAX_LENGTH)
@@ -3175,7 +3176,7 @@ async def ms_generate(req: MsGenerateRequest):
                             "timestamp": time.time(),
                             "prompt": req.prompt,
                             "images": [local_path],
-                            "type": "klein",
+                            "type": req.type,
                             "model": req.model,
                         }
                         save_to_history(record)

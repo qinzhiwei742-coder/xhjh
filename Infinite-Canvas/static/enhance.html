@@ -701,7 +701,8 @@
                             model: 'black-forest-labs/FLUX.2-klein-9B',
                             image_urls: [previewSrc],
                             loras: { 'Daniel8152/Klein-enhance': strength },
-                            client_id: CLIENT_ID
+                            client_id: CLIENT_ID,
+                            type: "enhance"
                         })
                     });
                     if (!msRes.ok) {
