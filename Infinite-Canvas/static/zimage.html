@@ -222,11 +222,21 @@
                         <div class="flex flex-col">
                             <span class="text-[9px] font-bold text-gray-400 uppercase mb-1" data-i18n="studio.dimensions">Dimensions</span>
                             <div class="flex items-center gap-2 text-xs font-bold">
-                                <input id="width" type="number" value="1024"
-                                    class="w-10 bg-transparent outline-none border-b border-transparent focus:border-black">
-                                <span class="text-gray-200">×</span>
-                                <input id="height" type="number" value="1024"
-                                    class="w-10 bg-transparent outline-none border-b border-transparent focus:border-black">
+                                <select id="sizeSelect" onchange="onSizeChange()" class="bg-transparent outline-none border-b border-transparent focus:border-black cursor-pointer text-sm">
+                                    <option value="1024x1024">1:1 (1024×1024)</option>
+                                    <option value="1344x768">16:9 (1344×768)</option>
+                                    <option value="768x1344">9:16 (768×1344)</option>
+                                    <option value="1024x768">4:3 (1024×768)</option>
+                                    <option value="768x1024">3:4 (768×1024)</option>
+                                    <option value="1280x720">16:9 HD (1280×720)</option>
+                                    <option value="720x1280">9:16 竖屏 (720×1280)</option>
+                                    <option value="1536x1024">3:2 (1536×1024)</option>
+                                    <option value="1024x1536">2:3 (1024×1536)</option>
+                                    <option value="1024x576">16:9 风景 (1024×576)</option>
+                                    <option value="576x1024">9:16 人像 (576×1024)</option>
+                                </select>
+                                <input id="width" type="hidden" value="1024">
+                                <input id="height" type="hidden" value="1024">
                             </div>
                         </div>
 
@@ -450,6 +460,14 @@
             } finally {
                 setLoading(false);
             }
+        }
+
+        // 尺寸选择
+        function onSizeChange() {
+            const sizeSelect = document.getElementById('sizeSelect');
+            const [width, height] = sizeSelect.value.split('x').map(Number);
+            document.getElementById('width').value = width;
+            document.getElementById('height').value = height;
         }
 
         // 工具函数
