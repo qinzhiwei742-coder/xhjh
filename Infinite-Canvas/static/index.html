@@ -548,7 +548,7 @@
             </nav>
 
             <div class="side-actions">
-                <button class="side-pill" onclick="toggleSidebar()" id="sidebar-toggle-btn" type="button" title="折叠侧边栏">
+                <button class="side-pill" onclick="toggleSidebar()" id="sidebar-toggle-btn" type="button">
                     <svg id="icon-sidebar-expand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M11 19l-7-7 7-7"></path>
                         <path d="M18 19l-7-7 7-7"></path>
@@ -779,17 +779,33 @@
             const iconExpand = document.getElementById('icon-sidebar-expand');
             const iconCollapse = document.getElementById('icon-sidebar-collapse');
             const toggleBtn = document.getElementById('sidebar-toggle-btn');
+            const toggleText = toggleBtn ? toggleBtn.querySelector('.side-pill-text') : null;
             if (!sidebar) return;
+            
+            const i18n = window.StudioI18n;
+            const collapseKey = 'common.collapseSidebar';
+            const expandKey = 'common.expandSidebar';
+            
             if (collapsed) {
                 sidebar.classList.add('collapsed');
                 if (iconExpand) iconExpand.style.display = 'none';
                 if (iconCollapse) iconCollapse.style.display = 'block';
-                if (toggleBtn) toggleBtn.title = '展开侧边栏';
+                if (toggleText) {
+                    toggleText.setAttribute('data-i18n', expandKey);
+                    toggleText.textContent = i18n ? i18n.t(expandKey) : '展开侧栏';
+                }
+                if (toggleBtn) toggleBtn.setAttribute('data-i18n-title', expandKey);
+                if (toggleBtn) toggleBtn.title = i18n ? i18n.t(expandKey) : '展开侧栏';
             } else {
                 sidebar.classList.remove('collapsed');
                 if (iconExpand) iconExpand.style.display = 'block';
                 if (iconCollapse) iconCollapse.style.display = 'none';
-                if (toggleBtn) toggleBtn.title = '折叠侧边栏';
+                if (toggleText) {
+                    toggleText.setAttribute('data-i18n', collapseKey);
+                    toggleText.textContent = i18n ? i18n.t(collapseKey) : '折叠侧栏';
+                }
+                if (toggleBtn) toggleBtn.setAttribute('data-i18n-title', collapseKey);
+                if (toggleBtn) toggleBtn.title = i18n ? i18n.t(collapseKey) : '折叠侧栏';
             }
         }
 
