@@ -24,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import FileResponse as StarletteFileResponse
+import time
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -588,7 +590,17 @@ os.makedirs(WORKFLOW_DIR, exist_ok=True)
 os.makedirs(CONVERSATION_DIR, exist_ok=True)
 os.makedirs(CANVAS_DIR, exist_ok=True)
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# 自定义静态文件服务，禁用缓存防止旧版本问题
+class NoCacheStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if isinstance(response, StarletteFileResponse):
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+        return response
+
+app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
