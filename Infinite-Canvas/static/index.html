@@ -655,7 +655,7 @@
         </script>
 
         <main class="stage">
-            <iframe id="frame-zimage" data-src="/static/zimage.html?v=20260517-size-optimized" class="active" scrolling="yes"></iframe>
+            <iframe id="frame-zimage" data-src="/static/zimage.html?v=20260517-force-refresh" class="active" scrolling="yes"></iframe>
             <iframe id="frame-enhance" data-src="/static/enhance.html?v=20260512-i18n2" scrolling="yes"></iframe>
             <iframe id="frame-klein" data-src="/static/klein.html?v=20260512-i18n2" scrolling="yes"></iframe>
             <iframe id="frame-angle" data-src="/static/angle.html?v=20260512-i18n2" scrolling="yes"></iframe>
@@ -704,7 +704,7 @@
             document.querySelectorAll('iframe').forEach(f => f.classList.remove('active'));
             const target = document.getElementById('frame-' + id);
             target.classList.add('active');
-            if (!target.src) target.src = target.dataset.src;
+            target.src = target.dataset.src;
             if(!options.skipRemember) localStorage.setItem(ACTIVE_PAGE_KEY, id);
             // sync theme to newly activated iframe
             syncThemeToFrame(target);
