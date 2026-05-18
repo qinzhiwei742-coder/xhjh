@@ -297,7 +297,8 @@
 
                         <div id="uploadContent" class="text-center space-y-4">
                             <div
-                                class="w-14 h-14 rounded-full border border-gray-200 bg-white flex items-center justify-center mx-auto group-hover:bg-black group-hover:text-white group-hover:border-black transition-all duration-500">
+                                id="uploadIconBtn"
+                                class="w-14 h-14 rounded-full border border-gray-200 bg-white flex items-center justify-center mx-auto group-hover:bg-black group-hover:text-white group-hover:border-black transition-all duration-500 cursor-pointer">
                                 <i data-lucide="arrow-up" class="w-5 h-5"></i>
                             </div>
                             <p class="text-[11px] font-bold uppercase tracking-tight" data-i18n="studio.dropImage">Drop image here</p>
@@ -561,7 +562,19 @@
             }
         }
 
-        dropzone.onclick = () => fileInput.click();
+        const uploadIconBtn = document.getElementById('uploadIconBtn');
+        
+        // 点击图标按钮上传
+        uploadIconBtn.onclick = (e) => {
+            e.stopPropagation();
+            fileInput.click();
+        };
+        
+        // 点击dropzone区域（白色框）也可以上传文件，或者粘贴
+        dropzone.onclick = (e) => {
+            fileInput.click();
+        };
+        
         fileInput.onchange = (e) => handleFile(e.target.files[0]);
 
         // Drag and Drop
@@ -580,12 +593,13 @@
             }
         });
 
-        // Paste support
-        let isHovering = false;
-        dropzone.addEventListener('mouseenter', () => isHovering = true);
-        dropzone.addEventListener('mouseleave', () => isHovering = false);
+        // Paste support - 不需要hover，点击dropzone后即可粘贴，或者全局都可以粘贴
+        let dropzoneClicked = false;
+        dropzone.addEventListener('click', () => dropzoneClicked = true);
+        document.addEventListener('click', (e) => {
+            if (!dropzone.contains(e.target)) dropzoneClicked = false;
+        });
         window.addEventListener('paste', (e) => {
-            if (!isHovering) return;
             const items = (e.clipboardData || e.originalEvent.clipboardData).items;
             for (let item of items) {
                 if (item.kind === 'file' && item.type.startsWith('image/')) {
