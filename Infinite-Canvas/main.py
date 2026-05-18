@@ -189,6 +189,23 @@ NEXT_TASK_ID = 1
 
 PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{2,40}$")
 
+def provider_key_env(provider_id):
+    if provider_id == "comfly":
+        return "COMFLY_API_KEY"
+    if provider_id == "modelscope":
+        return "MODELSCOPE_API_KEY"
+    return f"API_PROVIDER_{re.sub(r'[^A-Za-z0-9]', '_', provider_id).upper()}_KEY"
+
+# ==================== API Keys 默认配置 ====================
+# 在这里修改您的 API Key，也可以在环境变量或 API/.env 中设置
+DEFAULT_MODELSCOPE_API_KEY = ""  # 您的 ModelScope API Key
+DEFAULT_COMFLY_API_KEY = ""      # 您的 Comfly API Key
+DEFAULT_API_PROVIDER_KEYS = {    # 其他提供商的 API Key
+    # "apimart": "",
+    # "api-ndonm6": "",
+}
+# ============================================================
+
 def load_env_file():
     if not os.path.exists(API_ENV_FILE):
         return
@@ -204,6 +221,17 @@ def load_env_file():
                 os.environ.setdefault(key, value)
     except Exception as e:
         print(f"加载 API/.env 失败: {e}")
+    
+    # 将代码中的默认 API Key 也设置到环境变量（如果环境变量中还没有的话）
+    if DEFAULT_MODELSCOPE_API_KEY and not os.environ.get("MODELSCOPE_API_KEY"):
+        os.environ["MODELSCOPE_API_KEY"] = DEFAULT_MODELSCOPE_API_KEY
+    if DEFAULT_COMFLY_API_KEY and not os.environ.get("COMFLY_API_KEY"):
+        os.environ["COMFLY_API_KEY"] = DEFAULT_COMFLY_API_KEY
+    for provider_id, api_key in DEFAULT_API_PROVIDER_KEYS.items():
+        if api_key:
+            env_key = provider_key_env(provider_id)
+            if not os.environ.get(env_key):
+                os.environ[env_key] = api_key
 
 load_env_file()
 
@@ -211,8 +239,8 @@ COMFYUI_INSTANCES = [s.strip() for s in os.getenv("COMFYUI_INSTANCES", "127.0.0.
 COMFYUI_ADDRESS = COMFYUI_INSTANCES[0]
 
 AI_BASE_URL = os.getenv("COMFLY_BASE_URL", "https://ai.comfly.chat").rstrip("/")
-AI_API_KEY = os.getenv("COMFLY_API_KEY", "")
-MODELSCOPE_API_KEY = os.getenv("MODELSCOPE_API_KEY", "")
+AI_API_KEY = os.getenv("COMFLY_API_KEY", DEFAULT_COMFLY_API_KEY)
+MODELSCOPE_API_KEY = os.getenv("MODELSCOPE_API_KEY", DEFAULT_MODELSCOPE_API_KEY)
 MODELSCOPE_CHAT_BASE_URL = "https://api-inference.modelscope.cn/v1"
 MODELSCOPE_DEFAULT_IMAGE_MODELS = [
     "Tongyi-MAI/Z-Image-Turbo",
@@ -318,8 +346,8 @@ def reload_env_globals():
     避免保存后需要重启才能生效。"""
     global MODELSCOPE_API_KEY, AI_API_KEY, AI_BASE_URL
     global IMAGE_MODELS, CHAT_MODELS, VIDEO_MODELS, MODELSCOPE_CHAT_MODELS
-    MODELSCOPE_API_KEY = os.getenv("MODELSCOPE_API_KEY", "")
-    AI_API_KEY = os.getenv("COMFLY_API_KEY", "")
+    MODELSCOPE_API_KEY = os.getenv("MODELSCOPE_API_KEY", DEFAULT_MODELSCOPE_API_KEY)
+    AI_API_KEY = os.getenv("COMFLY_API_KEY", DEFAULT_COMFLY_API_KEY)
     AI_BASE_URL = os.getenv("COMFLY_BASE_URL", "https://ai.comfly.chat").rstrip("/")
     IMAGE_MODELS = model_list("IMAGE_MODELS", os.getenv("IMAGE_MODEL", IMAGE_MODEL), ["nano-banana-pro"])
     CHAT_MODELS = model_list("CHAT_MODELS", os.getenv("CHAT_MODEL", CHAT_MODEL), ["gpt-4o-mini", "gemini-3.1-flash-image-preview-2k"])
@@ -362,13 +390,6 @@ VIDEO_MODELS = model_list("VIDEO_MODELS", "veo3-fast", [
     "doubao-seedance-1-0-lite-t2v-250428",
     "doubao-seedance-1-0-lite-i2v-250428",
 ])
-
-def provider_key_env(provider_id):
-    if provider_id == "comfly":
-        return "COMFLY_API_KEY"
-    if provider_id == "modelscope":
-        return "MODELSCOPE_API_KEY"
-    return f"API_PROVIDER_{re.sub(r'[^A-Za-z0-9]', '_', provider_id).upper()}_KEY"
 
 def mask_secret(value):
     if not value:
