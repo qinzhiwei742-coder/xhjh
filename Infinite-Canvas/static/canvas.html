@@ -758,6 +758,7 @@
                 <button class="tool-btn" onclick="addGeneratorNode()"><i data-lucide="wand-sparkles" class="w-4 h-4"></i><span data-i18n="canvas.apiGenerate">API生成</span></button>
                 <button class="tool-btn" onclick="addMsGenNode()"><i data-lucide="cloud-lightning" class="w-4 h-4"></i><span data-i18n="canvas.msGenerate">MS生成</span></button>
                 <button class="tool-btn" onclick="addVideoNode()"><i data-lucide="clapperboard" class="w-4 h-4"></i><span data-i18n="canvas.videoGenerate">视频生成</span></button>
+                <button class="tool-btn" onclick="addComfyNode()"><i data-lucide="workflow" class="w-4 h-4"></i>ComfyUI</button>
                 <button class="tool-btn" onclick="addOutputNode()"><i data-lucide="circle-dot" class="w-4 h-4"></i>Output</button>
                 <button class="tool-btn" onclick="groupSelectedImages()"><i data-lucide="group" class="w-4 h-4"></i><span data-i18n="canvas.group">分组</span></button>
                 <button class="tool-btn" onclick="openCanvasLog()"><i data-lucide="list-todo" class="w-4 h-4"></i><span data-i18n="canvas.logs">日志</span></button>
@@ -809,6 +810,7 @@
                 <button class="menu-btn" onclick="menuAdd('generator')"><i data-lucide="wand-sparkles" class="w-4 h-4"></i><span data-i18n="canvas.apiGenerate">API生成</span></button>
                 <button class="menu-btn" onclick="menuAdd('msgen')"><i data-lucide="cloud-lightning" class="w-4 h-4"></i><span data-i18n="canvas.modelscopeGenerate">Modelscope生成</span></button>
                 <button class="menu-btn" onclick="menuAdd('video')"><i data-lucide="clapperboard" class="w-4 h-4"></i><span data-i18n="canvas.videoGenerateNode">视频生成</span></button>
+                <button class="menu-btn" onclick="menuAdd('comfy')"><i data-lucide="workflow" class="w-4 h-4"></i><span data-i18n="canvas.comfyGenerate">ComfyUI 生成</span></button>
                 <button class="menu-btn" onclick="menuAdd('output')"><i data-lucide="circle-dot" class="w-4 h-4"></i>Output</button>
             </div>
             <div id="linkCreateMenu" class="create-menu"></div>
@@ -973,6 +975,7 @@
             if(event.data?.type === 'canvas-focus'){
                 // 从其他标签页切换回画布时，重新拉取工作流列表并刷新节点
                 loadConfig().then(() => {
+                    pruneMissingComfyWorkflows();
                     if(typeof render === 'function') render();
                 });
                 if(canvas) syncRemoteCanvasNow();
@@ -1075,7 +1078,9 @@
         let videoModels = [];
         let msChatModels = [];
         let apiProviders = [];
-
+        let comfyBackendCount = 1;
+        let comfyWorkflows = [];
+        let comfyWorkflowCache = {};
         let managedProviderId = 'comfly';
         let localImageModels = [];
         let localChatModels = [];
@@ -1634,9 +1639,16 @@
                 chatModels = cfg.chat_models?.length ? cfg.chat_models : chatModels;
                 videoModels = cfg.video_models?.length ? cfg.video_models : DEFAULT_VIDEO_MODELS;
                 msChatModels = cfg.ms_chat_models?.length ? cfg.ms_chat_models : msChatModels;
+                comfyBackendCount = Math.max(1, (cfg.comfy_instances || []).length || 1);
                 apiProviders = Array.isArray(cfg.api_providers) && cfg.api_providers.length ? cfg.api_providers : defaultApiProviders();
                 models.nano = imageModels.find(m => m.toLowerCase().includes('nano')) || 'nano-banana-pro';
                 models.gpt = imageModels.find(m => !m.toLowerCase().includes('nano')) || cfg.image_model || 'gpt-image-2';
+                try {
+                    const wf = await fetch('/api/workflows').then(r=>r.json());
+                    comfyWorkflows = wf.workflows || [];
+                } catch(_) {
+                    comfyWorkflows = [];
+                }
             } catch(e) {
                 apiProviders = defaultApiProviders();
             }
@@ -1646,8 +1658,9 @@
         try {
             const apiChannel = new BroadcastChannel('studio-api');
             apiChannel.onmessage = async (e) => {
-                if(e.data?.type === 'providers-changed'){
+                if(e.data?.type === 'providers-changed' || e.data?.type === 'workflows-changed'){
                     await loadConfig();
+                    pruneMissingComfyWorkflows();
                     if(typeof render === 'function') render();
                 }
             };
@@ -1968,6 +1981,7 @@
                 localCanvasDirty = false;
                 nodes.forEach(n => { if(n.running) n.running = false; });
                 sanitizeConnections();
+                pruneMissingComfyWorkflows();
                 await refreshMissingCanvasAssets();
                 selected.clear();
                 setCanvasMode(true);
@@ -1994,6 +2008,7 @@
                 localCanvasDirty = false;
                 nodes.forEach(n => { if(n.running) n.running = false; });
                 sanitizeConnections();
+                pruneMissingComfyWorkflows();
                 refreshMissingCanvasAssets().then(() => render());
                 selected.clear();
                 renderCanvasList();
@@ -2880,6 +2895,7 @@
                     return [
                         {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
                         {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
+                        {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
                         {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'},
                         {type:'llm', label:'LLM', icon:'message-square-text'}
                     ];
@@ -2928,6 +2944,7 @@
                 ...(CANVAS_IMAGE_OUTPUT_TYPES.includes(node.type) ? [
                     {type:'generator', label:tr('canvas.apiGenerate'), icon:'wand-sparkles'},
                     {type:'msgen', label:tr('canvas.modelscopeGenerate'), icon:'cloud-lightning'},
+                    {type:'comfy', label:tr('canvas.comfyGenerate'), icon:'workflow'},
                     {type:'video', label:tr('canvas.videoGenerateNode'), icon:'clapperboard'}
                 ] : [])
             ];
@@ -3166,6 +3183,7 @@
             if(type === 'generator') return addGeneratorNode(point);
             if(type === 'msgen') return addMsGenNode(point);
             if(type === 'video') return addVideoNode(point);
+            if(type === 'comfy') return addComfyNode(point);
             if(type === 'output') return addOutputNode(point);
             return null;
         }
@@ -3178,6 +3196,7 @@
             if(type === 'generator') addGeneratorNode(menuPoint);
             if(type === 'msgen') addMsGenNode(menuPoint);
             if(type === 'video') addVideoNode(menuPoint);
+            if(type === 'comfy') addComfyNode(menuPoint);
             if(type === 'output') addOutputNode(menuPoint);
         }
         async function uploadImages(files, point){
@@ -4244,6 +4263,7 @@
             if(node.type === 'generator') body.appendChild(renderGeneratorBody(node));
             if(node.type === 'msgen') body.appendChild(renderMsGenBody(node));
             if(node.type === 'video') body.appendChild(renderVideoBody(node));
+            if(node.type === 'comfy') body.appendChild(renderComfyBody(node));
             if(node.type === 'output') {
                 const pendingHtml = (node._pending || []).map(p =>
                     `<div class="output-img-wrap loading-wrap" data-pending-id="${escapeAttr(p.id)}"><span class="output-time-pill running">${formatRunDuration(nowMs() - Number(p.startedAt || nowMs()))}</span><div class="output-spinner"></div><button class="output-del" title="${tr('common.delete')}">×</button></div>`
@@ -4263,8 +4283,8 @@
                 if(e.button !== 0 || !isNodeDragSurface(e.target)) return;
                 startNodeDrag(e, node);
             };
-            const canInput = ['generator','output','llm','msgen','video'].includes(node.type) || (node.type === 'loop' && node.imageInput);
-            const canOutput = ['image','prompt','loop','group','promptGroup','generator','llm','msgen','video'].includes(node.type);
+            const canInput = ['generator','comfy','output','llm','msgen','video'].includes(node.type) || (node.type === 'loop' && node.imageInput);
+            const canOutput = ['image','prompt','loop','group','promptGroup','generator','comfy','llm','msgen','video'].includes(node.type);
             if(canInput) el.insertAdjacentHTML('beforeend', `<div class="port in" title="${tr('canvas.connectHere')}"></div>`);
             if(canOutput) el.insertAdjacentHTML('beforeend', `<div class="port out" title="${tr('canvas.dragConnect')}"></div>`);
             el.insertAdjacentHTML('beforeend', `<div class="resize-handle" title="${tr('canvas.resize')}"></div>`);
@@ -4370,6 +4390,7 @@
             if(type === 'generator') return {w:380, h:0};
             if(type === 'msgen') return {w:380, h:0};
             if(type === 'video') return {w:400, h:0};
+            if(type === 'comfy') return {w:420, h:460};
             if(type === 'output') return {w:460, h:0};
             return {w:260, h:0};
         }
@@ -5669,8 +5690,8 @@
             scheduleSave();
         }
 
-        const CANVAS_GENERATOR_TYPES = ['generator','msgen','video'];
-        const CANVAS_IMAGE_OUTPUT_TYPES = ['generator','msgen'];
+        const CANVAS_GENERATOR_TYPES = ['generator','msgen','comfy','video'];
+        const CANVAS_IMAGE_OUTPUT_TYPES = ['generator','msgen','comfy'];
         function hasExplicitOutputConnection(nodeId){
             return connections.some(c => {
                 if(c.from !== nodeId) return false;
@@ -6308,6 +6329,7 @@
             const runOpts = {cascade:true, ...opts};
             if(node.type === 'generator') return runGenerator(node.id, runOpts);
             if(node.type === 'msgen') return runMsGenNode(node.id, runOpts);
+            if(node.type === 'comfy') return runComfyNode(node.id, runOpts);
             if(node.type === 'llm') return runLLMNode(node.id, runOpts);
             if(node.type === 'video') return runVideoNode(node.id, runOpts);
             return Promise.resolve();
@@ -6320,6 +6342,8 @@
             return promise;
         }
         function cascadeParallelLimit(order, totalRounds){
+            const hasComfy = order.some(id => nodes.find(n => n.id === id)?.type === 'comfy');
+            if(hasComfy) return Math.max(1, Math.min(totalRounds, comfyBackendCount || 1));
             return Math.max(1, Math.min(totalRounds, 6));
         }
         async function runLimitedCascadeRounds(rounds, limit, runner){
@@ -6591,6 +6615,7 @@
                 try {
                     if(node.type === 'generator') await runGenerator(id, {cascade:true});
                     else if(node.type === 'msgen') await runMsGenNode(id, {cascade:true});
+                    else if(node.type === 'comfy') await runComfyNode(id, {cascade:true});
                     else if(node.type === 'llm') await runLLMNode(id, {cascade:true});
                     else if(node.type === 'video') await runVideoNode(id, {cascade:true});
                     node.runStatus = 'done';
@@ -8219,6 +8244,7 @@
             initOutputPreviewZoomEvents();
             applyViewport();
             await loadConfig();
+            pruneMissingComfyWorkflows();
             await loadCanvasList(false);
             setCanvasMode(false);
         };

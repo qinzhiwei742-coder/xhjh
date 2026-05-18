@@ -162,6 +162,8 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str = None):
 
 CLIENT_ID = str(uuid.uuid4())
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WORKFLOW_DIR = os.path.join(BASE_DIR, "workflows")
+WORKFLOW_PATH = os.path.join(WORKFLOW_DIR, "Z-Image.json")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 ASSETS_DIR = os.path.join(BASE_DIR, "assets")
@@ -176,10 +178,14 @@ API_PROVIDERS_FILE = os.path.join(DATA_DIR, "api_providers.json")
 GLOBAL_CONFIG_FILE = os.path.join(BASE_DIR, "global_config.json")
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
+QUEUE = []
+QUEUE_LOCK = Lock()
 HISTORY_LOCK = Lock()
 GLOBAL_CONFIG_LOCK = Lock()
 CONVERSATION_LOCK = Lock()
 CANVAS_LOCK = Lock()
+LOAD_LOCK = Lock()
+NEXT_TASK_ID = 1
 
 PROVIDER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{2,40}$")
 
@@ -200,6 +206,9 @@ def load_env_file():
         print(f"加载 API/.env 失败: {e}")
 
 load_env_file()
+
+COMFYUI_INSTANCES = [s.strip() for s in os.getenv("COMFYUI_INSTANCES", "127.0.0.1:8188").split(",") if s.strip()]
+COMFYUI_ADDRESS = COMFYUI_INSTANCES[0]
 
 AI_BASE_URL = os.getenv("COMFLY_BASE_URL", "https://ai.comfly.chat").rstrip("/")
 AI_API_KEY = os.getenv("COMFLY_API_KEY", "")
@@ -254,6 +263,7 @@ MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
 AI_REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120"))
 IMAGE_POLL_INTERVAL = float(os.getenv("IMAGE_POLL_INTERVAL", "2"))
 IMAGE_TASK_TIMEOUT = float(os.getenv("IMAGE_TASK_TIMEOUT", str(AI_REQUEST_TIMEOUT)))
+COMFYUI_HISTORY_TIMEOUT = int(float(os.getenv("COMFYUI_HISTORY_TIMEOUT", "1800")))
 APIMART_IMAGE_TASK_TIMEOUT = float(os.getenv("APIMART_IMAGE_TASK_TIMEOUT", "1800"))
 APIMART_IMAGE_POLL_INTERVAL = float(os.getenv("APIMART_IMAGE_POLL_INTERVAL", "5"))
 APIMART_IMAGE_INITIAL_POLL_DELAY = float(os.getenv("APIMART_IMAGE_INITIAL_POLL_DELAY", "10"))
@@ -569,11 +579,14 @@ def update_env_values(updates):
     with open(API_ENV_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(next_lines).rstrip() + "\n")
 
+BACKEND_LOCAL_LOAD = {addr: 0 for addr in COMFYUI_INSTANCES}
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(ASSETS_DIR, exist_ok=True)
 os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
+os.makedirs(WORKFLOW_DIR, exist_ok=True)
 os.makedirs(CONVERSATION_DIR, exist_ok=True)
 os.makedirs(CANVAS_DIR, exist_ok=True)
 
@@ -592,6 +605,16 @@ app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 # --- Pydantic 模型 ---
+
+class GenerateRequest(BaseModel):
+    prompt: str = ""
+    width: int = 1024
+    height: int = 1024
+    workflow_json: str = "Z-Image.json"
+    params: Dict[str, Any] = {}
+    type: str = "zimage"
+    client_id: str = ""
+    convert_to_jpg: bool = False
 
 class DeleteHistoryRequest(BaseModel):
     timestamp: float
@@ -626,6 +649,9 @@ class OnlineImageRequest(BaseModel):
     size: str = "1024x1024"
     quality: str = "auto"
     reference_images: List[AIReference] = []
+
+CANVAS_TASKS: Dict[str, Dict[str, Any]] = {}
+CANVAS_TASK_LOCK = Lock()
 
 class CanvasVideoRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
@@ -716,7 +742,111 @@ class CanvasAssetDownloadRequest(BaseModel):
     urls: List[str] = []
     filename: str = "canvas-output-images.zip"
 
+# --- 负载均衡 ---
+
+def check_images_exist(backend_addr, images):
+    if not images: return True
+    for img in images:
+        try:
+            url = f"http://{backend_addr}/view?filename={urllib.parse.quote(img)}&type=input"
+            r = requests.get(url, stream=True, timeout=0.5)
+            r.close()
+            if r.status_code != 200: return False
+        except: return False
+    return True
+
+def get_best_backend(required_images: List[str] = None):
+    best_backend = COMFYUI_INSTANCES[0]
+    min_queue_size = float('inf')
+    candidates_with_images = []
+    candidates_others = []
+    backend_stats = {}
+
+    for addr in COMFYUI_INSTANCES:
+        try:
+            with urllib.request.urlopen(f"http://{addr}/queue", timeout=1) as response:
+                data = json.loads(response.read())
+                remote_load = len(data.get('queue_running', [])) + len(data.get('queue_pending', []))
+                with LOAD_LOCK:
+                    local_load = BACKEND_LOCAL_LOAD.get(addr, 0)
+                effective_load = max(remote_load, local_load)
+                has_images = check_images_exist(addr, required_images)
+                backend_stats[addr] = {"load": effective_load, "has_images": has_images}
+                if has_images:
+                    candidates_with_images.append(addr)
+                else:
+                    candidates_others.append(addr)
+        except Exception as e:
+            print(f"Backend {addr} unreachable: {e}")
+            continue
+
+    target_candidates = candidates_with_images if candidates_with_images else candidates_others
+    if not target_candidates:
+        if candidates_others:
+            target_candidates = candidates_others
+        else:
+            return COMFYUI_INSTANCES[0]
+
+    for addr in target_candidates:
+        load = backend_stats[addr]["load"]
+        if load < min_queue_size:
+            min_queue_size = load
+            best_backend = addr
+
+    return best_backend
+
 # --- 辅助工具 ---
+
+def download_image(comfy_address, comfy_url_path, prefix="studio_"):
+    filename = f"{prefix}{uuid.uuid4().hex[:10]}.png"
+    local_path = output_path_for(filename, "output")
+    full_url = f"http://{comfy_address}{comfy_url_path}"
+    try:
+        with urllib.request.urlopen(full_url) as response, open(local_path, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+        return output_url_for(filename, "output")
+    except Exception as e:
+        print(f"下载图片失败: {e}")
+        if comfy_url_path.startswith("/view"):
+            return comfy_url_path.replace("/view", "/api/view", 1)
+        return full_url
+
+def comfy_output_extension(item):
+    filename = str((item or {}).get("filename") or "")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mov", ".m4v", ".gif"}:
+        return ext
+    fmt = str((item or {}).get("format") or "").lower()
+    if "webm" in fmt:
+        return ".webm"
+    if "quicktime" in fmt or "mov" in fmt:
+        return ".mov"
+    if "mp4" in fmt or "h264" in fmt or "video" in fmt:
+        return ".mp4"
+    return ".png"
+
+def is_video_output_item(item):
+    ext = comfy_output_extension(item)
+    fmt = str((item or {}).get("format") or "").lower()
+    return ext in {".mp4", ".webm", ".mov", ".m4v"} or "video" in fmt
+
+def download_comfy_output(comfy_address, item, prefix="studio_"):
+    ext = comfy_output_extension(item)
+    filename = f"{prefix}{uuid.uuid4().hex[:10]}{ext}"
+    local_path = output_path_for(filename, "output")
+    subfolder = urllib.parse.quote(str(item.get("subfolder") or ""))
+    file_type = urllib.parse.quote(str(item.get("type") or "output"))
+    comfy_url_path = f"/view?filename={urllib.parse.quote(str(item['filename']))}&subfolder={subfolder}&type={file_type}"
+    full_url = f"http://{comfy_address}{comfy_url_path}"
+    try:
+        with urllib.request.urlopen(full_url) as response, open(local_path, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+        return output_url_for(filename, "output")
+    except Exception as e:
+        print(f"下载 ComfyUI 输出失败: {e}")
+        if comfy_url_path.startswith("/view"):
+            return comfy_url_path.replace("/view", "/api/view", 1)
+        return full_url
 
 def save_to_history(record):
     with HISTORY_LOCK:
@@ -731,6 +861,13 @@ def save_to_history(record):
         history.insert(0, record)
         with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(history[:5000], f, ensure_ascii=False, indent=4)
+
+def get_comfy_history(comfy_address, prompt_id):
+    try:
+        with urllib.request.urlopen(f"http://{comfy_address}/history/{prompt_id}") as response:
+            return json.loads(response.read())
+    except Exception as e:
+        return {}
 
 def safe_user_id(user_id, request: Request):
     candidate = (user_id or "").strip()
@@ -1594,6 +1731,29 @@ def upstream_message_from_record(item):
 async def index():
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
+@app.get("/api/view")
+def view_image(filename: str, type: str = "input", subfolder: str = ""):
+    # 先按原逻辑去各 ComfyUI 后端找
+    for addr in COMFYUI_INSTANCES:
+        try:
+            url = f"http://{addr}/view"
+            params = {"filename": filename, "type": type, "subfolder": subfolder}
+            r = requests.get(url, params=params, timeout=1)
+            if r.status_code == 200:
+                return Response(content=r.content, media_type=r.headers.get('Content-Type'))
+        except Exception:
+            continue
+    # 后端都拿不到时回退本地 assets/<input|output>/
+    # 适用场景：画布通过 /api/ai/upload 把参考图直接落到本地 assets/input/，
+    # 但 ComfyUI 的 input 可能因为重启/清理而丢失，导致 enhance/klein 等页面预览对比图 404
+    if not subfolder and type in ("input", "output"):
+        safe_name = os.path.basename(filename or "")
+        if safe_name:
+            local_path = output_path_for(safe_name, "input" if type == "input" else "output")
+            if os.path.isfile(local_path):
+                return FileResponse(local_path, media_type=content_type_for_path(local_path))
+    raise HTTPException(status_code=404, detail="Image not found on any available backend")
+
 @app.get("/api/download-output")
 def download_output(url: str, name: str = ""):
     path = output_file_from_url(url)
@@ -1601,6 +1761,34 @@ def download_output(url: str, name: str = ""):
         raise HTTPException(status_code=404, detail="文件不存在")
     filename = os.path.basename(name) if name else os.path.basename(path)
     return FileResponse(path, media_type=content_type_for_path(path), filename=filename)
+
+@app.post("/api/upload")
+async def upload_image(files: List[UploadFile] = File(...)):
+    uploaded_files = []
+    files_content = []
+    for file in files:
+        content = await file.read()
+        files_content.append((file, content))
+
+    for file, content in files_content:
+        success_count = 0
+        last_result = None
+        for addr in COMFYUI_INSTANCES:
+            try:
+                files_data = {'image': (file.filename, content, file.content_type)}
+                response = requests.post(f"http://{addr}/upload/image", files=files_data, timeout=5)
+                if response.status_code == 200:
+                    last_result = response.json()
+                    success_count += 1
+            except Exception as e:
+                print(f"Upload error for {addr}: {e}")
+
+        if success_count > 0 and last_result:
+            uploaded_files.append({"comfy_name": last_result.get("name", file.filename)})
+        else:
+            raise HTTPException(status_code=500, detail="Failed to upload to any backend")
+
+    return {"files": uploaded_files}
 
 @app.post("/api/ai/upload")
 async def upload_ai_reference(files: List[UploadFile] = File(...)):
@@ -1631,6 +1819,7 @@ async def ai_config():
         "chat_models": CHAT_MODELS,
         "image_models": IMAGE_MODELS,
         "video_models": VIDEO_MODELS,
+        "comfy_instances": COMFYUI_INSTANCES,
         "api_providers": providers,
         "has_api_key": bool(AI_API_KEY),
         "ms_chat_models": MODELSCOPE_CHAT_MODELS,
@@ -3024,6 +3213,409 @@ async def ms_generate(req: MsGenerateRequest):
     except Exception as e:
         print(f"MS generate error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+# --- 本地 ComfyUI 生图 ---
+
+@app.post("/api/generate")
+def generate(req: GenerateRequest):
+    global NEXT_TASK_ID
+    current_task = None
+    target_backend = None
+    with QUEUE_LOCK:
+        task_id = NEXT_TASK_ID
+        NEXT_TASK_ID += 1
+        current_task = {"task_id": task_id, "client_id": req.client_id}
+        QUEUE.append(current_task)
+
+    try:
+        required_images = []
+        for node_id, node_inputs in req.params.items():
+            if isinstance(node_inputs, dict) and "image" in node_inputs:
+                image_name = node_inputs["image"]
+                if isinstance(image_name, str) and image_name:
+                    required_images.append(image_name)
+
+        target_backend = get_best_backend(required_images)
+        with LOAD_LOCK:
+            BACKEND_LOCAL_LOAD[target_backend] += 1
+
+        for image_name in required_images:
+            need_sync = False
+            try:
+                check_url = f"http://{target_backend}/view?filename={urllib.parse.quote(image_name)}&type=input"
+                resp = requests.get(check_url, stream=True, timeout=0.5)
+                resp.close()
+                if resp.status_code != 200:
+                    need_sync = True
+            except:
+                need_sync = True
+
+            if need_sync:
+                image_content = None
+                image_type = "image/png"
+                for addr in COMFYUI_INSTANCES:
+                    if addr == target_backend: continue
+                    try:
+                        src_url = f"http://{addr}/view?filename={urllib.parse.quote(image_name)}&type=input"
+                        r = requests.get(src_url, timeout=5)
+                        if r.status_code == 200:
+                            image_content = r.content
+                            image_type = r.headers.get("Content-Type", "image/png")
+                            break
+                    except: continue
+
+                if image_content:
+                    try:
+                        files = {'image': (image_name, image_content, image_type)}
+                        requests.post(f"http://{target_backend}/upload/image", files=files, timeout=10)
+                    except Exception as e:
+                        print(f"Sync upload failed: {e}")
+
+        workflow_path = os.path.join(WORKFLOW_DIR, req.workflow_json)
+        if not os.path.exists(workflow_path) and req.workflow_json == "Z-Image.json":
+            workflow_path = WORKFLOW_PATH
+        if not os.path.exists(workflow_path):
+            raise Exception(f"Workflow file not found: {req.workflow_json}")
+
+        with open(workflow_path, 'r', encoding='utf-8') as f:
+            workflow = json.load(f)
+
+        seed = random.randint(1, 10**15)
+
+        if "23" in workflow and req.prompt:
+            workflow["23"]["inputs"]["text"] = req.prompt
+        if "144" in workflow:
+            workflow["144"]["inputs"]["width"] = req.width
+            workflow["144"]["inputs"]["height"] = req.height
+        if "22" in workflow:
+            workflow["22"]["inputs"]["seed"] = seed
+        if "158" in workflow:
+            workflow["158"]["inputs"]["noise_seed"] = seed
+        for node_id in ["146", "181"]:
+            if node_id in workflow and "inputs" in workflow[node_id] and "seed" in workflow[node_id]["inputs"]:
+                workflow[node_id]["inputs"]["seed"] = seed
+        if "184" in workflow and "inputs" in workflow["184"] and "seed" in workflow["184"]["inputs"]:
+            workflow["184"]["inputs"]["seed"] = seed
+        if "172" in workflow and "inputs" in workflow["172"] and "seed" in workflow["172"]["inputs"]:
+            workflow["172"]["inputs"]["seed"] = seed % 4294967295
+        if "14" in workflow and "inputs" in workflow["14"] and "seed" in workflow["14"]["inputs"]:
+            workflow["14"]["inputs"]["seed"] = seed
+
+        for node_id, node_inputs in req.params.items():
+            if node_id in workflow:
+                if "inputs" not in workflow[node_id]:
+                    workflow[node_id]["inputs"] = {}
+                for input_name, value in node_inputs.items():
+                    workflow[node_id]["inputs"][input_name] = value
+
+        p = {"prompt": workflow, "client_id": CLIENT_ID}
+        data = json.dumps(p).encode('utf-8')
+        try:
+            post_req = urllib.request.Request(f"http://{target_backend}/prompt", data=data)
+            prompt_id = json.loads(urllib.request.urlopen(post_req, timeout=10).read())['prompt_id']
+        except urllib.error.HTTPError as e:
+            error_body = e.read().decode('utf-8')
+            raise Exception(f"HTTP Error {e.code}: {error_body}")
+
+        history_data = None
+        for i in range(COMFYUI_HISTORY_TIMEOUT):
+            try:
+                res = get_comfy_history(target_backend, prompt_id)
+                if prompt_id in res:
+                    history_data = res[prompt_id]
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+
+        if not history_data:
+            raise Exception("ComfyUI 渲染超时")
+
+        local_images = []
+        local_videos = []
+        local_urls = []
+        current_timestamp = time.time()
+        if 'outputs' in history_data:
+            for node_id in history_data['outputs']:
+                node_output = history_data['outputs'][node_id]
+                if 'images' in node_output:
+                    for img in node_output['images']:
+                        prefix = f"{req.type}_{int(current_timestamp)}_"
+                        local_path = download_comfy_output(target_backend, img, prefix=prefix)
+                        if req.convert_to_jpg:
+                            local_path = convert_output_to_jpg(local_path)
+                        local_images.append(local_path)
+                        local_urls.append(local_path)
+                for output_key in ("videos", "gifs", "animated"):
+                    for video in node_output.get(output_key, []) or []:
+                        if not isinstance(video, dict) or not video.get("filename"):
+                            continue
+                        prefix = f"{req.type}_{int(current_timestamp)}_"
+                        local_path = download_comfy_output(target_backend, video, prefix=prefix)
+                        local_videos.append(local_path)
+                        local_urls.append(local_path)
+
+        result = {
+            "prompt": req.prompt if req.prompt else "Detail Enhance",
+            "images": local_images,
+            "videos": local_videos,
+            "outputs": local_urls,
+            "seed": seed,
+            "timestamp": current_timestamp,
+            "type": req.type,
+            "workflow_json": req.workflow_json,
+            "task_id": task_id,
+            "prompt_id": prompt_id,
+            "backend": target_backend,
+            "params": req.params
+        }
+        save_to_history(result)
+        if GLOBAL_LOOP:
+            asyncio.run_coroutine_threadsafe(manager.broadcast_new_image(result), GLOBAL_LOOP)
+        return result
+
+    except Exception as e:
+        return {"images": [], "error": str(e)}
+    finally:
+        if target_backend:
+            with LOAD_LOCK:
+                if BACKEND_LOCAL_LOAD.get(target_backend, 0) > 0:
+                    BACKEND_LOCAL_LOAD[target_backend] -= 1
+        if current_task:
+            with QUEUE_LOCK:
+                if current_task in QUEUE:
+                    QUEUE.remove(current_task)
+
+# --- ComfyUI 工作流管理 ---
+
+BUILTIN_WORKFLOWS = {"Z-Image.json", "Z-Image-Enhance.json", "2511.json", "klein-enhance.json", "Flux2-Klein.json", "upscale.json"}
+CUSTOM_WORKFLOW_FOLDER = "custom"
+LEGACY_CUSTOM_WORKFLOW_FOLDER = "自定义"
+WORKFLOW_NAME_RE = re.compile(rf"^(?:(?:{CUSTOM_WORKFLOW_FOLDER}|{LEGACY_CUSTOM_WORKFLOW_FOLDER})/)?[a-zA-Z0-9_一-龥\.\-]+\.json$")
+
+class WorkflowField(BaseModel):
+    id: str
+    node: str = ""
+    input: str = ""
+    name: str = ""
+    type: str = "text"
+    default: Any = None
+    min: Optional[float] = None
+    max: Optional[float] = None
+    step: Optional[float] = None
+    options: List[str] = []
+
+class WorkflowConfig(BaseModel):
+    title: str = ""
+    fields: List[WorkflowField] = []
+    mini_cards: Dict[str, Any] = {}
+
+class WorkflowUploadRequest(BaseModel):
+    name: str
+    workflow: Dict[str, Any]
+
+class WorkflowRunRequest(BaseModel):
+    fields: Dict[str, Any] = {}
+    config: WorkflowConfig
+    client_id: str = ""
+
+def workflow_path_from_name(name: str) -> str:
+    if not WORKFLOW_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    path = os.path.abspath(os.path.join(WORKFLOW_DIR, *name.split("/")))
+    workflow_root = os.path.abspath(WORKFLOW_DIR)
+    if os.path.commonpath([workflow_root, path]) != workflow_root:
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    return path
+
+def workflow_config_path(name: str) -> str:
+    return workflow_path_from_name(name).replace(".json", ".config.json")
+
+def is_builtin_workflow(name: str) -> bool:
+    return "/" not in name and os.path.basename(name) in BUILTIN_WORKFLOWS
+
+class ComfyInstancesPayload(BaseModel):
+    instances: List[str] = []
+
+@app.get("/api/comfyui/instances")
+def get_comfyui_instances():
+    return {"instances": COMFYUI_INSTANCES}
+
+@app.put("/api/comfyui/instances")
+def save_comfyui_instances(payload: ComfyInstancesPayload):
+    # 宽容校验：去前后空白、去 http(s):// 前缀、去尾部斜杠；要求形如 host:port
+    cleaned = []
+    for item in payload.instances:
+        s = str(item or "").strip()
+        if not s:
+            continue
+        s = re.sub(r"^https?://", "", s)
+        s = s.rstrip("/")
+        if ":" not in s:
+            raise HTTPException(status_code=400, detail=f"地址缺少端口号：{item}（应为 host:port，例如 127.0.0.1:8188）")
+        host, _, port = s.rpartition(":")
+        if not host or not port.isdigit():
+            raise HTTPException(status_code=400, detail=f"地址不合法：{item}（应为 host:port，例如 127.0.0.1:8188）")
+        if s in cleaned:
+            continue
+        cleaned.append(s)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="至少保留一个 ComfyUI 后端地址")
+    # 写入 env 文件
+    try:
+        update_env_values({"COMFYUI_INSTANCES": ",".join(cleaned)})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"写入 env 失败：{e}")
+    # 更新进程中的全局变量
+    global COMFYUI_INSTANCES, COMFYUI_ADDRESS, BACKEND_LOCAL_LOAD
+    COMFYUI_INSTANCES = cleaned
+    COMFYUI_ADDRESS = cleaned[0]
+    new_load = {addr: 0 for addr in cleaned}
+    for addr, n in (BACKEND_LOCAL_LOAD or {}).items():
+        if addr in new_load:
+            new_load[addr] = n
+    BACKEND_LOCAL_LOAD = new_load
+    return {"instances": COMFYUI_INSTANCES}
+
+@app.get("/api/workflows")
+def list_workflows():
+    if not os.path.isdir(WORKFLOW_DIR):
+        return {"workflows": []}
+    items = []
+    for root, dirs, files in os.walk(WORKFLOW_DIR):
+        if os.path.abspath(root) == os.path.abspath(WORKFLOW_DIR):
+            dirs[:] = [d for d in dirs if d in {CUSTOM_WORKFLOW_FOLDER, LEGACY_CUSTOM_WORKFLOW_FOLDER}]
+        for fn in sorted(files):
+            if not fn.endswith(".json") or fn.endswith(".config.json"):
+                continue
+            rel = os.path.relpath(os.path.join(root, fn), WORKFLOW_DIR).replace("\\", "/")
+            if is_builtin_workflow(rel):
+                continue
+            cfg = {}
+            cfg_path = workflow_config_path(rel)
+            if os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, "r", encoding="utf-8") as f:
+                        cfg = json.load(f) or {}
+                except Exception:
+                    cfg = {}
+            items.append({
+                "name": rel,
+                "title": cfg.get("title") or fn.replace(".json", ""),
+                "builtin": False,
+                "field_count": len(cfg.get("fields") or []),
+            })
+    items.sort(key=lambda item: (0 if item["name"].startswith(f"{CUSTOM_WORKFLOW_FOLDER}/") else 1, item["title"]))
+    return {"workflows": items}
+
+@app.get("/api/workflows/{name:path}")
+def get_workflow(name: str):
+    if not WORKFLOW_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    workflow_path = workflow_path_from_name(name)
+    if not os.path.exists(workflow_path):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    with open(workflow_path, "r", encoding="utf-8") as f:
+        workflow = json.load(f)
+    cfg = {"title": name.replace(".json", ""), "fields": []}
+    cfg_path = workflow_config_path(name)
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f) or cfg
+        except Exception:
+            pass
+    return {"name": name, "workflow": workflow, "config": cfg, "builtin": is_builtin_workflow(name)}
+
+@app.post("/api/workflows")
+def upload_workflow(payload: WorkflowUploadRequest):
+    name = os.path.basename(payload.name.strip())
+    if not name.endswith(".json"):
+        name = name + ".json"
+    if not WORKFLOW_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="工作流名称不合法，请使用中文/英文/数字/_-.")
+    if not isinstance(payload.workflow, dict) or not payload.workflow:
+        raise HTTPException(status_code=400, detail="工作流 JSON 为空")
+    # 简单校验：是 API 格式（节点 id 为 key，含 class_type）
+    sample = next(iter(payload.workflow.values()), None)
+    if not isinstance(sample, dict) or "class_type" not in sample:
+        raise HTTPException(status_code=400, detail="不是有效的 ComfyUI API 工作流 JSON（需包含 class_type）")
+    custom_dir = os.path.join(WORKFLOW_DIR, CUSTOM_WORKFLOW_FOLDER)
+    os.makedirs(custom_dir, exist_ok=True)
+    stored_name = f"{CUSTOM_WORKFLOW_FOLDER}/{name}"
+    path = workflow_path_from_name(stored_name)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload.workflow, f, ensure_ascii=False, indent=2)
+    return {"name": stored_name}
+
+@app.put("/api/workflows/{name:path}/config")
+def save_workflow_config(name: str, payload: WorkflowConfig):
+    if not WORKFLOW_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    workflow_path = workflow_path_from_name(name)
+    if not os.path.exists(workflow_path):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    cfg_path = workflow_config_path(name)
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(payload.dict(), f, ensure_ascii=False, indent=2)
+    return {"config": payload.dict()}
+
+@app.delete("/api/workflows/{name:path}")
+def delete_workflow(name: str):
+    if not WORKFLOW_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    if is_builtin_workflow(name):
+        raise HTTPException(status_code=400, detail="内置工作流不可删除")
+    workflow_path = workflow_path_from_name(name)
+    cfg_path = workflow_config_path(name)
+    if not os.path.exists(workflow_path):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    os.remove(workflow_path)
+    if os.path.exists(cfg_path):
+        os.remove(cfg_path)
+    return {"ok": True}
+
+@app.post("/api/workflows/{name:path}/run")
+def run_workflow(name: str, payload: WorkflowRunRequest):
+    if not WORKFLOW_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="Invalid workflow name")
+    if not os.path.exists(workflow_path_from_name(name)):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    # 根据 config 的字段把值映射成 params 节点覆盖
+    params: Dict[str, Dict[str, Any]] = {}
+    for field in payload.config.fields:
+        if not field.node or not field.input:
+            continue
+        if field.id in payload.fields:
+            value = payload.fields[field.id]
+            # 类型转换
+            if field.type in ("number", "slider"):
+                try:
+                    value = float(value) if (field.step and field.step < 1) else int(float(value))
+                except Exception:
+                    pass
+            elif field.type == "boolean":
+                value = bool(value)
+            elif field.type == "dropdown":
+                # 下拉值如果看起来是数字（如 "1024" / "2048" / "0.8"），自动转成 int/float
+                if isinstance(value, str):
+                    s = value.strip()
+                    try:
+                        if s and ('.' in s or 'e' in s.lower()):
+                            value = float(s)
+                        elif s and (s.lstrip('-').isdigit()):
+                            value = int(s)
+                    except (ValueError, TypeError):
+                        pass
+            params.setdefault(field.node, {})[field.input] = value
+    req = GenerateRequest(
+        prompt="",
+        workflow_json=name,
+        params=params,
+        type="workflow-test",
+        client_id=payload.client_id or str(uuid.uuid4()),
+    )
+    return generate(req)
 
 if __name__ == "__main__":
     import uvicorn

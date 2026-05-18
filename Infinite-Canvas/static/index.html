@@ -594,6 +594,17 @@
                     </svg>
                     <span class="side-pill-text" data-i18n="common.apiSettings">API 设置</span>
                 </button>
+                <button class="side-pill" onclick="switchUI(this, 'comfyui-settings')" type="button" title="ComfyUI 设置">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+                        <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+                        <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+                        <path d="M14 14h7v7h-7z"></path>
+                        <line x1="10" y1="6.5" x2="14" y2="6.5"></line>
+                        <line x1="6.5" y1="10" x2="6.5" y2="14"></line>
+                    </svg>
+                    <span class="side-pill-text" data-i18n="common.comfyuiSettings">ComfyUI 设置</span>
+                </button>
             </div>
 
             <div class="author-box">
@@ -652,6 +663,7 @@
             <iframe id="frame-gpt-chat" data-src="/static/gpt-chat.html" scrolling="yes"></iframe>
             <iframe id="frame-canvas" data-src="/static/canvas.html" scrolling="yes"></iframe>
             <iframe id="frame-api-settings" data-src="/static/api-settings.html" scrolling="yes"></iframe>
+            <iframe id="frame-comfyui-settings" data-src="/static/comfyui-settings.html" scrolling="yes"></iframe>
 
             <div class="nano-monitor" id="nano-monitor">
                 <div class="stat-group">
@@ -683,7 +695,7 @@
         localStorage.setItem("client_id", CID);
         const ACTIVE_PAGE_KEY = 'studio_active_page';
         const DEFAULT_PAGE_ID = 'zimage';
-        const PAGE_IDS = ['zimage','enhance','klein','angle','online','gpt-chat','canvas','api-settings'];
+        const PAGE_IDS = ['zimage','enhance','klein','angle','online','gpt-chat','canvas','api-settings','comfyui-settings'];
 
         function switchUI(el, id, options = {}) {
             if(!PAGE_IDS.includes(id)) id = DEFAULT_PAGE_ID;
@@ -699,6 +711,10 @@
             // sync theme to newly activated iframe
             syncThemeToFrame(target);
             syncLanguageToFrame(target);
+            // 切换到画布时通知刷新工作流列表（防止在 comfyui-settings 修改后画布未及时更新）
+            if (id === 'canvas' && target.src) {
+                try { target.contentWindow?.postMessage({ type: 'canvas-focus' }, '*'); } catch(e) {}
+            }
         }
 
         function restoreActivePage() {
