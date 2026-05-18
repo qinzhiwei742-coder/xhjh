@@ -323,13 +323,8 @@
                             <span data-i18n="studio.engine">Engine</span>
                         </div>
                         <div class="provider-switch engine-switch">
-                            <button id="providerLocal" onclick="setEnhanceProvider('local')"
-                                class="provider-btn engine-btn active">
-                                <i data-lucide="cpu" class="w-3 h-3"></i>
-                                <span data-i18n="studio.local">Local</span>
-                            </button>
                             <button id="providerMs" onclick="setEnhanceProvider('ms')"
-                                class="provider-btn engine-btn">
+                                class="provider-btn engine-btn active">
                                 <i data-lucide="cloud" class="w-3 h-3"></i>
                                 ModelScope
                             </button>
@@ -518,18 +513,14 @@
         let uploadedPath = "";
         let currentResult = null;
         let currentUpscaleFactor = 2048;
-        let enhanceProvider = 'local';
+        let enhanceProvider = 'ms'; // 强制使用云端模式
 
         function setEnhanceProvider(p) {
-            enhanceProvider = p;
-            document.getElementById('providerLocal').className = p === 'local'
-                ? 'provider-btn engine-btn active'
-                : 'provider-btn engine-btn';
-            document.getElementById('providerMs').className = p === 'ms'
-                ? 'provider-btn engine-btn active'
-                : 'provider-btn engine-btn';
-            document.getElementById('localControls').classList.toggle('hidden', p !== 'local');
-            document.getElementById('msControls').classList.toggle('hidden', p !== 'ms');
+            enhanceProvider = 'ms'; // 强制使用云端模式
+            document.getElementById('providerLocal').className = 'provider-btn engine-btn';
+            document.getElementById('providerMs').className = 'provider-btn engine-btn active';
+            document.getElementById('localControls').classList.toggle('hidden', true);
+            document.getElementById('msControls').classList.toggle('hidden', false);
             lucide.createIcons();
         }
 
@@ -622,20 +613,10 @@
             };
             reader.readAsDataURL(file);
 
-            const formData = new FormData();
-            formData.append('files', file);
-            try {
-                const res = await fetch('/api/upload', { method: 'POST', body: formData });
-                const data = await res.json();
-                uploadedPath = data.files[0].comfy_name;
-                // Enable button after successful upload
-                btn.disabled = false;
-                btnText.innerText = tr('studio.beginRemaster');
-            } catch (err) {
-                console.error("Upload error");
-                btnText.innerText = tr('studio.uploadFailed');
-                btn.disabled = false;
-            }
+            uploadedPath = file.name;
+            // Enable button immediately since we don't need to upload anymore
+            btn.disabled = false;
+            btnText.innerText = tr('studio.beginRemaster');
         }
 
         function toggleUpscaleOptions() {
@@ -672,112 +653,45 @@
             try {
                 let finalData;
 
-                if (enhanceProvider === 'ms') {
-                    // MS Cloud: Klein model + enhance LoRA
-                    debugStep = "MS Cloud Request";
-                    const previewSrc = document.getElementById('previewImg').src;
-                    if (!previewSrc || previewSrc === window.location.href) throw new Error("请先上传图片");
-                    const strength = parseFloat(document.getElementById('msStrengthSlider').value) || 0.8;
-                    const prompt = document.getElementById('msPromptInput').value.trim()
-                        || 'masterpiece, best quality, ultra-detailed, high resolution';
-                    let token = localStorage.getItem('modelscope_api_token') || '';
-                    if (!token) {
-                        try {
-                            const tokenRes = await fetch('/api/config/token');
-                            if (tokenRes.ok) {
-                                const tokenData = await tokenRes.json();
-                                token = tokenData.token || '';
-                            }
-                        } catch (e) {
-                            console.warn('Failed to fetch ModelScope token', e);
+                // MS Cloud: Klein model + enhance LoRA (only option now)
+                debugStep = "MS Cloud Request";
+                const previewSrc = document.getElementById('previewImg').src;
+                if (!previewSrc || previewSrc === window.location.href) throw new Error("请先上传图片");
+                const strength = parseFloat(document.getElementById('msStrengthSlider').value) || 0.8;
+                const prompt = document.getElementById('msPromptInput').value.trim()
+                    || 'masterpiece, best quality, ultra-detailed, high resolution';
+                let token = localStorage.getItem('modelscope_api_token') || '';
+                if (!token) {
+                    try {
+                        const tokenRes = await fetch('/api/config/token');
+                        if (tokenRes.ok) {
+                            const tokenData = await tokenRes.json();
+                            token = tokenData.token || '';
                         }
-                    }
-                    const msRes = await fetch('/api/ms/generate', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            prompt,
-                            api_key: token,
-                            model: 'black-forest-labs/FLUX.2-klein-9B',
-                            image_urls: [previewSrc],
-                            loras: { 'Daniel8152/Klein-enhance': strength },
-                            client_id: CLIENT_ID,
-                            type: "enhance"
-                        })
-                    });
-                    if (!msRes.ok) {
-                        const err = await msRes.json().catch(() => ({}));
-                        throw new Error(err.detail || 'MS生成失败');
-                    }
-                    const msData = await msRes.json();
-                    if (!msData.url) throw new Error("MS生成失败: 未返回图片");
-                    finalData = { images: [msData.url], timestamp: Date.now(), params: { "15": { "image": uploadedPath } } };
-
-                } else {
-                    // Local ComfyUI
-                    const isUpscale = document.getElementById('upscaleToggle').checked;
-
-                    debugStep = "Phase 1 Request";
-                    btn.innerHTML = `<i data-lucide="zap" class="w-4 h-4 text-yellow-400 fill-yellow-400 animate-pulse"></i><span class="tracking-[0.4em] text-[11px] uppercase">${isUpscale ? "Phase 1/2: Enhancing..." : "Processing..."}</span>`;
-                    lucide.createIcons();
-
-                    const enhanceRes = await fetch('/api/generate', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            workflow_json: "Z-Image-Enhance.json",
-                            params: { "15": { "image": uploadedPath }, "204": { "value": parseFloat(slider.value) } },
-                            type: "enhance",
-                            client_id: CLIENT_ID
-                        })
-                    });
-                    const enhanceData = await enhanceRes.json();
-                    if (enhanceData.error) throw new Error("Enhance API Error: " + enhanceData.error);
-                    if (!enhanceData.images?.length) throw new Error("Enhance failed: No images returned");
-
-                    finalData = enhanceData;
-
-                    if (isUpscale) {
-                        debugStep = "Phase 2 Preparation";
-                        btn.innerHTML = `<i data-lucide="zap" class="w-4 h-4 text-yellow-400 fill-yellow-400 animate-pulse"></i><span class="tracking-[0.4em] text-[11px] uppercase">Phase 2/2: Uploading...</span>`;
-                        lucide.createIcons();
-
-                        const imgUrl = enhanceData.images[0];
-                        let imgBlob;
-                        try {
-                            const blobRes = await fetch(imgUrl);
-                            if (!blobRes.ok) throw new Error(`Fetch failed status: ${blobRes.status}`);
-                            imgBlob = await blobRes.blob();
-                        } catch (e) { throw new Error(`Failed to fetch Phase 1 image: ${e.message}`); }
-
-                        debugStep = "Phase 2 Upload";
-                        const formData = new FormData();
-                        formData.append('files', imgBlob, 'temp_upscale_input.png');
-                        const uploadRes = await fetch('/api/upload', { method: 'POST', body: formData });
-                        if (!uploadRes.ok) throw new Error(`Upload failed status: ${uploadRes.status}`);
-                        const uploadData = await uploadRes.json();
-                        if (!uploadData.files?.[0]) throw new Error("Intermediate upload failed");
-                        const uploadedInput = uploadData.files[0].comfy_name;
-
-                        debugStep = "Phase 2 Execution";
-                        btn.innerHTML = `<i data-lucide="zap" class="w-4 h-4 text-yellow-400 fill-yellow-400 animate-pulse"></i><span class="tracking-[0.4em] text-[11px] uppercase">Phase 2/2: Upscaling...</span>`;
-                        lucide.createIcons();
-                        const seed = Math.floor(Math.random() * 4294967295);
-                        const upscaleRes = await fetch('/api/generate', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                workflow_json: "upscale.json",
-                                params: { "15": { "image": uploadedInput }, "172": { "seed": seed, "resolution": currentUpscaleFactor } },
-                                type: "enhance",
-                                client_id: CLIENT_ID
-                            })
-                        });
-                        finalData = await upscaleRes.json();
-                        if (finalData.error) throw new Error("Upscale API Error: " + finalData.error);
-                        if (!finalData.images?.length) throw new Error("Upscale failed: No images returned");
+                    } catch (e) {
+                        console.warn('Failed to fetch ModelScope token', e);
                     }
                 }
+                const msRes = await fetch('/api/ms/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt,
+                        api_key: token,
+                        model: 'black-forest-labs/FLUX.2-klein-9B',
+                        image_urls: [previewSrc],
+                        loras: { 'Daniel8152/Klein-enhance': strength },
+                        client_id: CLIENT_ID,
+                        type: "enhance"
+                    })
+                });
+                if (!msRes.ok) {
+                    const err = await msRes.json().catch(() => ({}));
+                    throw new Error(err.detail || 'MS生成失败');
+                }
+                const msData = await msRes.json();
+                if (!msData.url) throw new Error("MS生成失败: 未返回图片");
+                finalData = { images: [msData.url], timestamp: Date.now(), params: { "15": { "image": uploadedPath } } };
 
                 currentResult = finalData;
                 const out = document.getElementById('outputImg');

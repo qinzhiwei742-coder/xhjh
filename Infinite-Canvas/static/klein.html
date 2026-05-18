@@ -250,10 +250,7 @@
                         <span data-i18n="studio.engine">Engine</span>
                     </div>
                     <div class="engine-switch">
-                        <button id="localBtn" class="engine-btn active" onclick="setEngine('local')">
-                            <i data-lucide="cpu" class="w-3 h-3"></i><span data-i18n="studio.local">Local</span>
-                        </button>
-                        <button id="cloudBtn" class="engine-btn" onclick="setEngine('cloud')">
+                        <button id="cloudBtn" class="engine-btn active" onclick="setEngine('cloud')">
                             <i data-lucide="cloud" class="w-3 h-3"></i>ModelScope
                         </button>
                     </div>
@@ -403,23 +400,18 @@
         let currentIndex = 0;
         const PAGE_SIZE = 24;
         let isLoading = false;
-        let engine = 'local';
+        let engine = 'cloud';
         let loraEnabled = false;
 
-        // 引擎切换
+        // 引擎切换 - 只保留云端模式
         function setEngine(mode) {
-            engine = mode;
-            document.getElementById('localBtn').classList.toggle('active', mode === 'local');
-            document.getElementById('cloudBtn').classList.toggle('active', mode === 'cloud');
-            document.getElementById('cloudImgNote').classList.toggle('hidden', mode === 'local');
+            engine = 'cloud'; // 强制使用云端模式
+            document.getElementById('localBtn').classList.toggle('active', false);
+            document.getElementById('cloudBtn').classList.toggle('active', true);
+            document.getElementById('cloudImgNote').classList.toggle('hidden', false);
             const loraSection = document.getElementById('loraSection');
-            if (mode === 'cloud') {
-                loraSection.classList.remove('hidden');
-                loraSection.classList.add('flex');
-            } else {
-                loraSection.classList.add('hidden');
-                loraSection.classList.remove('flex');
-            }
+            loraSection.classList.remove('hidden');
+            loraSection.classList.add('flex');
         }
 
         function toggleLora() {
@@ -473,14 +465,7 @@
             };
             reader.readAsDataURL(file);
 
-            // Also upload to ComfyUI for local mode
-            const formData = new FormData();
-            formData.append('files', file);
-            try {
-                const res = await fetch('/api/upload', { method: 'POST', body: formData });
-                const data = await res.json();
-                uploadedNames[index] = data.files[0].comfy_name;
-            } catch (e) { uploadedNames[index] = file.name; }
+            uploadedNames[index] = file.name;
         }
 
         function clearSlot(index, ev) {

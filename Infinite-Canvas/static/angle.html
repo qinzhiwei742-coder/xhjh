@@ -377,12 +377,7 @@
 
                     <!-- Engine Switcher -->
                     <div class="mode-switcher">
-                        <div id="modeLocal" class="mode-btn active flex items-center justify-center gap-1.5"
-                            onclick="switchEngine('local')">
-                            <i data-lucide="monitor" class="w-3 h-3"></i>
-                            <span>Local</span>
-                        </div>
-                        <div id="modeCloud" class="mode-btn flex items-center justify-center gap-1.5"
+                        <div id="modeCloud" class="mode-btn active flex items-center justify-center gap-1.5"
                             onclick="switchEngine('cloud')">
                             <i data-lucide="cloud" class="w-3 h-3"></i>
                             <span>ModelScope</span>
@@ -743,27 +738,23 @@
         });
         window.addEventListener('studio-lang-change', () => { document.title = tr('nav.angle'); });
         
-        // --- Engine Switcher Logic (UI Only) ---
-        let currentEngine = 'local';
+        // --- Engine Switcher Logic (Cloud Only) ---
+        let currentEngine = 'cloud';
         const ENGINE_MODE_KEY = 'angle_engine_mode';
 
         window.switchEngine = function(mode) {
-            currentEngine = mode;
-            localStorage.setItem(ENGINE_MODE_KEY, mode);
+            // Force cloud mode only
+            currentEngine = 'cloud';
+            localStorage.setItem(ENGINE_MODE_KEY, 'cloud');
 
             const glider = document.getElementById('glider');
             const localBtn = document.getElementById('modeLocal');
             const cloudBtn = document.getElementById('modeCloud');
 
-            if (mode === 'local') {
-                glider.style.transform = 'translateX(0)';
-                localBtn.classList.add('active');
-                cloudBtn.classList.remove('active');
-            } else {
-                glider.style.transform = 'translateX(100%)';
-                cloudBtn.classList.add('active');
-                localBtn.classList.remove('active');
-            }
+            // Always set to cloud position
+            glider.style.transform = 'translateX(100%)';
+            cloudBtn.classList.add('active');
+            if (localBtn) localBtn.classList.remove('active');
         };
 
         function generateUUID() {
@@ -848,19 +839,9 @@
             };
             reader.readAsDataURL(file);
 
-            const formData = new FormData();
-            formData.append('files', file);
-            try {
-                const res = await fetch('/api/upload', { method: 'POST', body: formData });
-                const data = await res.json();
-                uploadedPath = data.files[0].comfy_name;
-                btn.disabled = false;
-                btnText.innerText = tr('studio.generateAngle');
-            } catch (err) {
-                console.error("Upload error");
-                btnText.innerText = tr('studio.uploadFailed');
-                btn.disabled = false;
-            }
+            uploadedPath = file.name;
+            btn.disabled = false;
+            btnText.innerText = tr('studio.generateAngle');
         }
 
         function applyAngleToPrompt() {
@@ -1036,20 +1017,7 @@
         }
 
         async function handleGenerate() {
-            if (!uploadedPath && currentEngine === 'local') {
-                // ... existing local check ...
-                const dropzone = document.getElementById('dropzone');
-                dropzone.style.transition = "0.2s";
-                dropzone.style.borderColor = "#ef4444";
-                dropzone.style.transform = "scale(0.98)";
-                setTimeout(() => {
-                    dropzone.style.borderColor = "";
-                    dropzone.style.transform = "scale(1)";
-                }, 300);
-                return;
-            }
-            
-            if (!uploadedFile && currentEngine === 'cloud') {
+            if (!uploadedFile) {
                  alert("Please upload an image first");
                  return;
             }
@@ -1080,30 +1048,8 @@
             try {
                 let data;
                 
-                if (currentEngine === 'cloud') {
-                    // Cloud Logic
-                    data = await runCloudTask();
-                } else {
-                    // Local Logic
-                    const seed = Math.floor(Math.random() * 1000000000000000);
-                    const res = await fetch('/api/generate', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            workflow_json: "2511.json",
-                            params: {
-                                "31": { "image": uploadedPath },
-                                "11": { "prompt": promptInput.value },
-                                "14": { "seed": seed }
-                            },
-                            type: "angle",
-                            client_id: CLIENT_ID
-                        })
-                    });
-                    data = await res.json();
-                    if (data.error) throw new Error(data.error);
-                    if (!data.images?.length) throw new Error("No images returned");
-                }
+                // Cloud Logic only
+                data = await runCloudTask();
 
                 currentResult = data;
                 const outputImg = document.getElementById('outputImg');
